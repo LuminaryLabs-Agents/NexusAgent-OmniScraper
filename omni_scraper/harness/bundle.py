@@ -4,11 +4,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+import os
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
 from omni_scraper.reduce.html_to_markdown import ReducedPage
+
+from .text import trim_middle
 
 
 @dataclass(slots=True)
@@ -28,6 +31,13 @@ class ExtractorBundle:
         return md_path, json_path
 
 
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, str(default)))
+    except ValueError:
+        return default
+
+
 def site_slug(root_url: str) -> str:
     parsed = urlparse(root_url)
     host = parsed.netloc or parsed.path
@@ -41,15 +51,19 @@ def build_extractor_bundle(
     router_output: dict[str, Any],
     scout_output: dict[str, Any] | None = None,
     run_id: str = "manual",
+    max_page_chars: int | None = None,
+    max_pages: int | None = None,
 ) -> ExtractorBundle:
     slug = site_slug(root_url)
     bundle_id = f"{run_id}/{slug}"
+    page_char_budget = _env_int("OMNI_EXTRACTOR_PAGE_CHARS", 5000) if max_page_chars is None else max_page_chars
+    page_limit = _env_int("OMNI_EXTRACTOR_MAX_PAGES", 4) if max_pages is None else max_pages
     kept_by_url = {item.get("url", ""): item for item in router_output.get("kept_urls", []) if isinstance(item, dict)}
     ordered_pages = sorted(
         reduced_pages,
         key=lambda page: int(kept_by_url.get(page.final_url, kept_by_url.get(page.source_url, {})).get("priority", 0)),
         reverse=True,
-    )
+    )[:page_limit]
 
     lines: list[str] = [
         f"# Extractor Bundle: {slug}",
@@ -69,12 +83,17 @@ def build_extractor_bundle(
     for index, page in enumerate(ordered_pages, start=1):
         route = kept_by_url.get(page.final_url) or kept_by_url.get(page.source_url) or {}
         page_id = page.page_id or f"page-{index:02d}"
+        original_chars = len(page.markdown)
+        reduced_markdown = trim_middle(page.markdown.strip(), page_char_budget)
         page_metadata.append({
             "page_id": page_id,
             "source_url": page.source_url,
             "final_url": page.final_url,
             "priority": route.get("priority", 0),
             "reason": route.get("reason", "Included in finalized bundle."),
+            "original_markdown_chars": original_chars,
+            "bundle_markdown_chars": len(reduced_markdown),
+            "truncated_for_bundle": original_chars > len(reduced_markdown),
         })
         lines.extend(
             [
@@ -85,10 +104,11 @@ def build_extractor_bundle(
                 f"Final URL: {page.final_url}",
                 f"Router Priority: {route.get('priority', 0)}",
                 f"Router Reason: {route.get('reason', 'Included in finalized bundle.')}",
+                f"Bundle Markdown Chars: {len(reduced_markdown)} of {original_chars}",
                 "",
                 "### Reduced Markdown",
                 "",
-                page.markdown.strip(),
+                reduced_markdown,
                 "",
                 "---",
                 "",
@@ -101,5 +121,6 @@ def build_extractor_bundle(
         "pages": page_metadata,
         "router_output": router_output,
         "scout_output": scout_output or {},
+        "bundle_limits": {"max_page_chars": page_char_budget, "max_pages": page_limit},
     }
     return ExtractorBundle(bundle_id=bundle_id, root_url=root_url, markdown="\n".join(lines).strip() + "\n", metadata=metadata)
