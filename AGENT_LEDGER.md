@@ -4,23 +4,46 @@
 
 - GitHub repository: `LuminaryLabs-Agents/NexusAgent-OmniScraper`
 - Default branch: `main`
-- Initial chat target: build and push an OmniScraper starter directly to the repository.
 
 ## Current implementation
 
-- Python package: `omni_scraper`
-- CLI command: `omni-scraper`
-- Core module: `omni_scraper/core.py`
-- Robots helper: `omni_scraper/robots.py`
-- Tests: `tests/test_core.py`
+The repo now includes an LM Studio-ready contact harness built around deterministic reduction, cheap scout/router passes, a strict extractor schema, and deterministic validation.
 
-## Build direction
+Implemented areas:
 
-Keep the scraper modular so future agent passes can add:
+```text
+omni_scraper/reduce/
+  fetch.py
+  html_to_markdown.py
+  link_cluster.py
+  signals.py
+  accessibility.py
 
-- Source-specific collectors.
-- Browser-backed rendering.
-- Queue and crawl frontier management.
-- Deduplication and content fingerprints.
-- Export formats beyond JSONL.
-- Evidence/source ledgers for collected public data.
+omni_scraper/models/
+  lm_studio.py
+
+omni_scraper/harness/
+  scout.py
+  router.py
+  extractor.py
+  bundle.py
+  runner.py
+  ledger.py
+
+omni_scraper/schemas/
+  scout.py
+  router.py
+  extraction.py
+
+omni_scraper/validate/
+  regexes.py
+  evidence.py
+```
+
+## Safety rails
+
+- Raw HTML is reduced to Markdown before model stages.
+- Scout and Router operate on reduced packets, not raw HTML.
+- Missing data is expected in extractor output.
+- Extracted fields require exact source quotes and exact context windows.
+- Deterministic validation rejects unsupported contact fields before export.
