@@ -4,18 +4,21 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "nexusagent-omni-scraper"
-version = "0.1.0"
-description = "Dependency-light public web scraping starter for agents."
+version = "0.2.0"
+description = "Agentic public web scraping harness for contact extraction."
 readme = "README.md"
 requires-python = ">=3.10"
 authors = [{ name = "Luminary Labs" }]
 license = { text = "MIT" }
-keywords = ["scraping", "agents", "crawler", "public-data"]
+keywords = ["scraping", "agents", "crawler", "public-data", "contact-extraction"]
 classifiers = [
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3 :: Only",
   "License :: OSI Approved :: MIT License",
 ]
+
+[project.optional-dependencies]
+playwright = ["playwright>=1.45"]
 
 [project.scripts]
 omni-scraper = "omni_scraper.cli:main"
