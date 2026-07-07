@@ -8,6 +8,11 @@ from pathlib import Path
 import sys
 
 from .core import ScrapeConfig, Scraper
+from .models.lm_studio import LMStudioConfig
+from .pipeline.packets import make_markdown_packet, site_slug
+from .reduce.fetch import fetch_html
+from .reduce.html_to_markdown import reduce_html
+from .validate.evidence import validate_extraction_files
 
 
 def _read_urls(args: argparse.Namespace) -> list[str]:
@@ -41,6 +46,28 @@ def build_parser() -> argparse.ArgumentParser:
     scrape.add_argument("--max-bytes", type=int, default=2_000_000, help="Maximum response bytes per page.")
     scrape.add_argument("--ignore-robots", action="store_true", help="Do not check robots.txt before fetching.")
     scrape.add_argument("--user-agent", default=ScrapeConfig.user_agent, help="User-Agent header.")
+
+    reduce_url = subparsers.add_parser("reduce-url", help="Fetch a URL and write deterministic reduced Markdown/JSON.")
+    reduce_url.add_argument("url")
+    reduce_url.add_argument("--output-dir", "-o", default="runs/manual/reduced", help="Directory for page.md and page.json.")
+    reduce_url.add_argument("--timeout", type=float, default=20.0)
+    reduce_url.add_argument("--max-bytes", type=int, default=3_000_000)
+
+    packet = subparsers.add_parser("bundle-pages", help="Create a finalized Markdown packet from reduced page JSON files.")
+    packet.add_argument("--root-url", required=True)
+    packet.add_argument("--run-id", default="manual")
+    packet.add_argument("--output", default="runs/manual/site-bundle.md")
+    packet.add_argument("pages", nargs="+", help="Reduced page JSON files created by reduce-url.")
+
+    validate = subparsers.add_parser("validate-extraction", help="Run deterministic validation on extractor JSON.")
+    validate.add_argument("--bundle", required=True, help="Path to finalized site-bundle.md.")
+    validate.add_argument("--extraction", required=True, help="Path to extractor-output.json.")
+    validate.add_argument("--metadata", help="Optional path to site-bundle.json for source URL validation.")
+    validate.add_argument("--output", "-o", default="runs/manual/validation-result.json")
+
+    config = subparsers.add_parser("show-config", help="Show LM Studio configuration resolved from environment variables.")
+    config.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+
     return parser
 
 
@@ -66,6 +93,58 @@ def main(argv: list[str] | None = None) -> int:
         ok_count = sum(1 for record in records if record.ok)
         print(f"wrote {len(records)} records to {args.output} ({ok_count} ok)")
         return 0 if ok_count == len(records) else 1
+
+    if args.command == "reduce-url":
+        fetched = fetch_html(args.url, timeout_seconds=args.timeout, max_bytes=args.max_bytes)
+        if not fetched.ok:
+            print(f"fetch failed: {fetched.error}", file=sys.stderr)
+            return 1
+        page = reduce_html(fetched.html, source_url=args.url, final_url=fetched.final_url)
+        output_dir = Path(args.output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        (output_dir / "page.md").write_text(page.markdown, encoding="utf-8")
+        (output_dir / "page.json").write_text(page.to_json(), encoding="utf-8")
+        print(f"wrote reduced page to {output_dir}")
+        return 0
+
+    if args.command == "bundle-pages":
+        pages = [json.loads(Path(path).read_text(encoding="utf-8")) for path in args.pages]
+        markdown = make_markdown_packet(args.root_url, pages, run_id=args.run_id)
+        output = Path(args.output)
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(markdown, encoding="utf-8")
+        metadata = {"bundle_id": f"{args.run_id}/{site_slug(args.root_url)}", "root_url": args.root_url, "pages": pages}
+        output.with_suffix(".json").write_text(json.dumps(metadata, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+        print(f"wrote finalized Markdown packet to {output}")
+        return 0
+
+    if args.command == "validate-extraction":
+        result = validate_extraction_files(
+            bundle_path=args.bundle,
+            extraction_path=args.extraction,
+            metadata_path=args.metadata,
+            output_path=args.output,
+        )
+        print(f"validated extraction: {json.dumps(result.to_dict()['stats'], sort_keys=True)}")
+        return 1 if result.rejected_fields else 0
+
+    if args.command == "show-config":
+        cfg = LMStudioConfig.from_env()
+        data = {
+            "base_url": cfg.base_url,
+            "scout_model": cfg.scout_model,
+            "router_model": cfg.router_model,
+            "extractor_model": cfg.extractor_model,
+            "timeout_seconds": cfg.timeout_seconds,
+            "temperature": cfg.temperature,
+            "max_tokens": cfg.max_tokens,
+        }
+        if args.json:
+            print(json.dumps(data, indent=2, sort_keys=True))
+        else:
+            for key, value in data.items():
+                print(f"{key}: {value}")
+        return 0
 
     parser.error(f"unknown command: {args.command}")
     return 2
