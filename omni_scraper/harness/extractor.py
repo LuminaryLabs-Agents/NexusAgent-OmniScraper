@@ -24,6 +24,8 @@ class ExtractorAgent:
             response_schema=CONTACT_EXTRACTION_JSON_SCHEMA,
             schema_name="contact_extraction",
             temperature=0.0,
+            max_tokens=self.client.config.extractor_max_tokens,
+            timeout_seconds=self.client.config.extractor_timeout_seconds,
         )
 
     def run_file(self, bundle_path: str | Path, *, root_url: str, bundle_id: str) -> dict[str, Any]:
