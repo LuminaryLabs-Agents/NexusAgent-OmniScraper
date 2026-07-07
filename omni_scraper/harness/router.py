@@ -26,6 +26,8 @@ class RouterAgent:
             user_prompt=build_router_prompt(root_url=root_url, pages=pages, scout_output=scout_output),
             response_schema=ROUTER_JSON_SCHEMA,
             schema_name="router_response",
+            max_tokens=self.client.config.router_max_tokens,
+            timeout_seconds=self.client.config.router_timeout_seconds,
         )
 
 
