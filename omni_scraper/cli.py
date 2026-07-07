@@ -8,7 +8,9 @@ from pathlib import Path
 import sys
 
 from .core import ScrapeConfig, Scraper
-from .models.lm_studio import LMStudioConfig
+from .harness.extractor import ExtractorAgent
+from .harness.runner import ContactHarnessRunner
+from .models.lm_studio import LMStudioClient, LMStudioConfig
 from .pipeline.packets import make_markdown_packet, site_slug
 from .reduce.fetch import fetch_html
 from .reduce.html_to_markdown import reduce_html
@@ -33,6 +35,13 @@ def _write_records(records: list[object], output: str) -> None:
             stream.write("\n")
 
 
+def _write_json(path: str | Path, data: object) -> Path:
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+    return target
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="omni-scraper")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -53,17 +62,30 @@ def build_parser() -> argparse.ArgumentParser:
     reduce_url.add_argument("--timeout", type=float, default=20.0)
     reduce_url.add_argument("--max-bytes", type=int, default=3_000_000)
 
-    packet = subparsers.add_parser("bundle-pages", help="Create a finalized Markdown packet from reduced page JSON files.")
-    packet.add_argument("--root-url", required=True)
-    packet.add_argument("--run-id", default="manual")
-    packet.add_argument("--output", default="runs/manual/site-bundle.md")
-    packet.add_argument("pages", nargs="+", help="Reduced page JSON files created by reduce-url.")
+    bundle = subparsers.add_parser("bundle-pages", help="Create a finalized Markdown packet from reduced page JSON files.")
+    bundle.add_argument("--root-url", required=True)
+    bundle.add_argument("--run-id", default="manual")
+    bundle.add_argument("--output", default="runs/manual/site-bundle.md")
+    bundle.add_argument("pages", nargs="+", help="Reduced page JSON files created by reduce-url.")
+
+    extract = subparsers.add_parser("extract-contact", help="Run the extractor stage on a finalized Markdown bundle.")
+    extract.add_argument("--bundle", required=True, help="Path to finalized site-bundle.md.")
+    extract.add_argument("--root-url", required=True)
+    extract.add_argument("--bundle-id", default="manual/site")
+    extract.add_argument("--output", "-o", default="runs/manual/extractor-output.json")
+    extract.add_argument("--model", help="Override OMNI_EXTRACTOR_MODEL for this call.")
 
     validate = subparsers.add_parser("validate-extraction", help="Run deterministic validation on extractor JSON.")
     validate.add_argument("--bundle", required=True, help="Path to finalized site-bundle.md.")
     validate.add_argument("--extraction", required=True, help="Path to extractor-output.json.")
     validate.add_argument("--metadata", help="Optional path to site-bundle.json for source URL validation.")
     validate.add_argument("--output", "-o", default="runs/manual/validation-result.json")
+
+    run = subparsers.add_parser("run-contact-harness", help="Run scout -> router -> extractor -> validator for one seed URL.")
+    run.add_argument("seed_url")
+    run.add_argument("--output-dir", "-o", default="runs/manual")
+    run.add_argument("--run-id", default="manual")
+    run.add_argument("--max-router-pages", type=int, default=8)
 
     config = subparsers.add_parser("show-config", help="Show LM Studio configuration resolved from environment variables.")
     config.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
@@ -118,6 +140,16 @@ def main(argv: list[str] | None = None) -> int:
         print(f"wrote finalized Markdown packet to {output}")
         return 0
 
+    if args.command == "extract-contact":
+        client = LMStudioClient()
+        model = args.model or client.config.extractor_model
+        agent = ExtractorAgent(client=client, model=model)
+        bundle_text = Path(args.bundle).read_text(encoding="utf-8")
+        extraction = agent.run(bundle_text, root_url=args.root_url, bundle_id=args.bundle_id)
+        output = _write_json(args.output, extraction)
+        print(f"wrote extractor output to {output}")
+        return 0
+
     if args.command == "validate-extraction":
         result = validate_extraction_files(
             bundle_path=args.bundle,
@@ -127,6 +159,16 @@ def main(argv: list[str] | None = None) -> int:
         )
         print(f"validated extraction: {json.dumps(result.to_dict()['stats'], sort_keys=True)}")
         return 1 if result.rejected_fields else 0
+
+    if args.command == "run-contact-harness":
+        manifest = ContactHarnessRunner().run(
+            args.seed_url,
+            output_dir=args.output_dir,
+            run_id=args.run_id,
+            max_router_pages=args.max_router_pages,
+        )
+        print(json.dumps(manifest, indent=2, sort_keys=True))
+        return 0
 
     if args.command == "show-config":
         cfg = LMStudioConfig.from_env()
