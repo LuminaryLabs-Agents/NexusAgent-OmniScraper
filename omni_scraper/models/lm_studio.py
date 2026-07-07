@@ -29,23 +29,37 @@ class LMStudioConfig:
     router_model: str = "qwen3.5-4b"
     extractor_model: str = "agents-a1"
     timeout_seconds: float = 120.0
+    scout_timeout_seconds: float = 120.0
+    router_timeout_seconds: float = 120.0
+    extractor_timeout_seconds: float = 600.0
     temperature: float = 0.0
     max_tokens: int = 4096
+    scout_max_tokens: int = 2048
+    router_max_tokens: int = 2048
+    extractor_max_tokens: int = 8192
     response_format: str = "json_schema"
     debug_dir: str = ""
 
     @classmethod
     def from_env(cls) -> "LMStudioConfig":
         qwen_default = os.getenv("OMNI_QWEN_MODEL", "qwen3.5-4b")
+        default_timeout = float(os.getenv("OMNI_LMSTUDIO_TIMEOUT", "120"))
+        default_max_tokens = int(os.getenv("OMNI_LMSTUDIO_MAX_TOKENS", "4096"))
         return cls(
             base_url=os.getenv("OMNI_LMSTUDIO_BASE_URL", "http://localhost:1234/v1").rstrip("/"),
             api_key=os.getenv("OMNI_LMSTUDIO_API_KEY", "lm-studio"),
             scout_model=os.getenv("OMNI_SCOUT_MODEL", qwen_default),
             router_model=os.getenv("OMNI_ROUTER_MODEL", qwen_default),
             extractor_model=os.getenv("OMNI_EXTRACTOR_MODEL", "agents-a1"),
-            timeout_seconds=float(os.getenv("OMNI_LMSTUDIO_TIMEOUT", "120")),
+            timeout_seconds=default_timeout,
+            scout_timeout_seconds=float(os.getenv("OMNI_SCOUT_TIMEOUT", str(default_timeout))),
+            router_timeout_seconds=float(os.getenv("OMNI_ROUTER_TIMEOUT", str(default_timeout))),
+            extractor_timeout_seconds=float(os.getenv("OMNI_EXTRACTOR_TIMEOUT", os.getenv("OMNI_AGENTS_A1_TIMEOUT", "600"))),
             temperature=float(os.getenv("OMNI_LMSTUDIO_TEMPERATURE", "0")),
-            max_tokens=int(os.getenv("OMNI_LMSTUDIO_MAX_TOKENS", "4096")),
+            max_tokens=default_max_tokens,
+            scout_max_tokens=int(os.getenv("OMNI_SCOUT_MAX_TOKENS", os.getenv("OMNI_QWEN_MAX_TOKENS", "2048"))),
+            router_max_tokens=int(os.getenv("OMNI_ROUTER_MAX_TOKENS", os.getenv("OMNI_QWEN_MAX_TOKENS", "2048"))),
+            extractor_max_tokens=int(os.getenv("OMNI_EXTRACTOR_MAX_TOKENS", os.getenv("OMNI_AGENTS_A1_MAX_TOKENS", "8192"))),
             response_format=os.getenv("OMNI_LMSTUDIO_RESPONSE_FORMAT", "json_schema"),
             debug_dir=os.getenv("OMNI_LMSTUDIO_DEBUG_DIR", ""),
         )
@@ -65,17 +79,13 @@ class LMStudioClient:
         schema_name: str,
         temperature: float | None = None,
         max_tokens: int | None = None,
+        timeout_seconds: float | None = None,
     ) -> dict[str, Any]:
-        """Call LM Studio and parse a JSON object, retrying weaker format modes.
-
-        Some local models/LM Studio builds do not reliably honor strict
-        json_schema output. We try json_schema first, then json_object, then a
-        plain prompt with the schema embedded. This keeps the harness usable
-        while still validating downstream outputs deterministically.
-        """
+        """Call LM Studio and parse a JSON object, retrying weaker format modes."""
         modes = _fallback_modes(self.config.response_format)
         last_error = "No LM Studio attempt was made."
         last_raw: dict[str, Any] | None = None
+        request_timeout = self.config.timeout_seconds if timeout_seconds is None else timeout_seconds
 
         for mode in modes:
             prompt = user_prompt
@@ -92,7 +102,7 @@ class LMStudioClient:
                 temperature=self.config.temperature if temperature is None else temperature,
                 max_tokens=self.config.max_tokens if max_tokens is None else max_tokens,
             )
-            raw = self._post_json("/chat/completions", payload)
+            raw = self._post_json("/chat/completions", payload, timeout_seconds=request_timeout)
             last_raw = raw
             self._debug_write(schema_name=schema_name, mode=mode, payload=payload, raw=raw)
             content = extract_message_text(raw)
@@ -139,7 +149,7 @@ class LMStudioClient:
             payload["response_format"] = {"type": "json_object"}
         return payload
 
-    def _post_json(self, endpoint: str, payload: dict[str, Any]) -> dict[str, Any]:
+    def _post_json(self, endpoint: str, payload: dict[str, Any], *, timeout_seconds: float) -> dict[str, Any]:
         url = f"{self.config.base_url}{endpoint}"
         request = Request(
             url,
@@ -151,11 +161,13 @@ class LMStudioClient:
             method="POST",
         )
         try:
-            with urlopen(request, timeout=self.config.timeout_seconds) as response:
+            with urlopen(request, timeout=timeout_seconds) as response:
                 body = response.read().decode("utf-8", errors="replace")
         except HTTPError as exc:
             body = exc.read().decode("utf-8", errors="replace")
             raise ModelCallError(f"LM Studio HTTP {exc.code}: {body}") from exc
+        except TimeoutError as exc:
+            raise ModelCallError(f"LM Studio request timed out after {timeout_seconds:.0f}s for {url}") from exc
         except URLError as exc:
             raise ModelCallError(f"Could not reach LM Studio at {url}: {exc.reason}") from exc
         try:
