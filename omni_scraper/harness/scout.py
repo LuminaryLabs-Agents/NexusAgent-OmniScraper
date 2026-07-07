@@ -26,6 +26,8 @@ class ScoutAgent:
             user_prompt=build_scout_prompt(page),
             response_schema=SCOUT_JSON_SCHEMA,
             schema_name="scout_response",
+            max_tokens=self.client.config.scout_max_tokens,
+            timeout_seconds=self.client.config.scout_timeout_seconds,
         )
 
 
